@@ -1,0 +1,431 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Don’t Bank On It: Logistic Regression, Random Forest, SVM and Their Performance in Predicting Bank Customer Churn 
+
+
+```{r cars}
+library(dplyr)
+library(Hmisc)
+library(caret)
+library(formattable)
+library(ggplot2)
+library(grid)
+library(ggthemes)
+library(gridExtra)
+library(lattice)
+library(pROC)
+library(caret)
+library(randomForest)
+library(e1071)
+```
+
+## Data Pre-Processing
+
+Let's look at the data and its feature
+
+```{r pressure, echo=FALSE}
+Churn<-read.csv("C:/Users/Churn_Modelling.csv")
+str(Churn)
+```
+We will be dropping both RowNumber,Surname and CustomerID as these are ID columns
+
+```{r}
+Churn<-subset(Churn, select = -c(RowNumber ,CustomerId,Surname ) )
+```
+
+
+Next we will identify character variables and then transform them into categorical
+```{r}
+Churn[1:10,] %>% 
+  select_if(is.character)
+```
+
+```{r}
+a <- ggplot(Churn, aes(x = Exited, y = ..count../sum(..count..), fill = Exited)) + 
+          geom_bar(color = "black", alpha = 0.7) +
+          geom_text(aes(label = percent(..count../sum(..count..))), 
+          size = 4, stat= "count", position = position_stack(vjust = 0.5)) +
+          scale_y_continuous(labels = percent) +
+          labs(title = "Churn proportions", y  = "Percentage") +
+          scale_x_discrete(name  = "Did the client churn?",
+                          breaks=c("0", "1"),
+                          labels=c("No", "Yes"))+
+          theme_minimal() +
+          scale_fill_brewer(palette="Set2")+
+          guides(fill = F)+
+          theme(text = element_text(size = 12), 
+          plot.title = element_text(hjust = 0.5), title = element_text(size = 8))
+
+b <- ggplot(Churn,aes(x = Exited, group = Gender)) + 
+    geom_bar(aes(y = ..prop.., fill = factor(..x..)), 
+    stat="count", color = "black", alpha = 0.7) +
+    geom_text(aes(label = scales::percent(..prop..),
+    y= ..prop.. ), stat= "count", position = position_stack(vjust = 0.5), size = 3) +
+    facet_grid(Gender ~ Geography) +
+    scale_y_continuous(labels = scales::percent)+
+    scale_x_discrete(name  = "Did the client churn?",
+                          breaks=c("0", "1"),
+                          labels=c("No", "Yes"))+
+    guides(fill = F)+
+    labs(title = "Churn proportions by gender and geographical location
+         ", y = "Percentage")+
+    theme_minimal()+
+    scale_fill_brewer(palette="Set2")+
+    theme(text = element_text(size = 12), 
+    plot.title = element_text(hjust = 0.5), title = element_text(size = 8))
+
+grid.arrange(a,b, ncol = 2)
+
+```
+
+
+```{r}
+salary = Churn %>% group_by(Gender, Geography) %>% summarise(mean_sal = round(mean(EstimatedSalary),2))
+
+
+ggplot(salary,aes(x = Gender, y = mean_sal, fill = Gender)) + 
+    geom_bar(stat = "identity",color = "black", alpha = 0.7) +
+    geom_text(aes(label = mean_sal, vjust = -.5), size = 4)+
+    facet_grid(~ Geography) +
+    labs(title = "Gender and geographical composition of salaries
+         ", 
+    x = "", y = "Mean salary")+
+    theme_minimal()+
+    coord_cartesian(ylim=c(95000,103000))+
+    scale_y_continuous(breaks = seq(95000,103000, 1000))+
+    guides(fill = F)+
+    theme(text = element_text(size = 12), 
+    plot.title = element_text(hjust = 0.5), title = element_text(size = 12))
+
+```
+
+
+
+```{r}
+Churn$Geography<-sapply(as.factor(Churn$Geography),unclass )
+Churn$Gender<-sapply(as.factor(Churn$Gender),unclass )
+
+```
+
+Now let's see if there are any oddities with the data
+```{r}
+summary(Churn)
+```
+While nothing seems out of the ordinary, It is worth checking the distribution of our variables to see if there is any degenerate distributions.
+```{r}
+hist.data.frame(Churn[,1:5])
+hist.data.frame(Churn[,6:10])
+
+```
+
+```{r}
+par(mfrow=c(2,2)) 
+hist(Churn[,'Gender'], main='Gender', xlab='Gender')
+hist(Churn[,'HasCrCard'], main='HasCrCard', xlab='HasCrCard')
+hist(Churn[,'IsActiveMember'], main='IsActiveMember', xlab='IsActiveMember')
+hist(Churn[,'Exited'], main='Exited', xlab='Exited')
+
+```
+
+No degenerate distributions are found. Finally we will check for any missing values
+```{r}
+sum(is.na(Churn))
+```
+
+It appears there is no further issues with our data so we can now start predicting whether a customer will leave the bank or not.
+
+Binary Logistic regression for churn prediction
+
+```{r}
+modeling_data = Churn 
+
+
+modeling_data$Geography<-sapply(as.factor(modeling_data$Geography),unclass )
+modeling_data$Gender<-sapply(as.factor(modeling_data$Gender),unclass )
+
+my_log_model <- glm(Exited ~., family = binomial, data = modeling_data)
+summary(my_log_model)
+```
+
+From the summary table it can be seen that the most statistically significant variables are:
+
+1.Geography (Germany compared to France),
+2.Gender (Male compared to Female),
+3.Age,
+4.Balance,
+5.Whether a client is an active member (yes compared to no).
+
+Further I will give an interpretation to these statistically significant coefficients.
+
+
+Interpretation of model coefficients
+Exponentiating coefficient to give interpretation:
+
+```{r}
+coefs <- coef(my_log_model) %>% exp() %>% round(2)
+coefs
+```
+
+Interpretation table:
+
+```{r}
+Coefficient <- c("GeographyGermany","GenderMale", "Age", "Balance","IsActiveMemberyes")
+
+Interpretation <- c("Given that the country of residence for a client is Germany, the hazard to churn increases by a factor of 2.17 or by 159 % for German residents compared to French residents. So to say, Germans are more likely to decide to churn in contrast to French and Spanish clients.", "Given that the client is male, the risk of churning decreases by a factor of 0.59 or by 41% compared to female clients. So to say, men are 41% more likely to stick to one bank than women.", "A one year increase in age of a client increases the hazard to churn by a factor of 1.08 or by 8%.","Given that the balance .", "If a person is an active member of a bank system, the hazard to churn decreases by a factor of 0.33 or by 77%. So to say, active bank cliens are 77% more likely to stay.")
+
+Coef_tab <- data.frame(Coefficient, Interpretation)
+
+formattable(Coef_tab, 
+            align =c("l","l"), 
+            list(`Indicator Name` = formatter(
+              "span", style = ~ style(color = "grey",font.weight = "bold"))))
+```
+
+Data partition, modelling again
+
+Creating train and test subsets:
+
+```{r}
+modeling_data$Exited = as.factor(modeling_data$Exited)
+modeling_data$churn = ifelse(modeling_data$Exited == 1,"Churns","Stays") #for clarity
+modeling_data$churn = as.factor(modeling_data$churn)
+modeling_data = modeling_data %>% dplyr::select(-Exited) #removing the column with numbers, otherwise the prediction is obvious
+
+set.seed(125)
+test.ind = createDataPartition(modeling_data$churn, p = 0.2, list = FALSE) #classic 80/20 train-test partition
+churn.test = modeling_data[test.ind,]
+churn.train = modeling_data[-test.ind,]
+```
+
+
+
+Building a model on train data, predicting on test data, presenting confusion matrix:
+
+```{r}
+model.train = train(churn ~., data = churn.train, method = "glm", family = binomial(link = "logit"))
+
+predTrain = predict(model.train,churn.train)
+predTest = predict(model.train, churn.test)
+```
+
+
+Confusion Matrices
+For train subset:
+
+```{r}
+confusionMatrix(predTrain, churn.train$churn, positive = "Churns")
+```
+
+
+Model accuracy is 81%, which is pretty good. However, the sensitivity parameter of the model is only about 21 %, which means that there is a high probability for type II error (False Negative), meaning that the model is more likely to mis-classify churners as those who would not churn (even though in reality they churned).
+
+
+For test subset:
+
+
+```{r}
+confusionMatrix(predTest, churn.test$churn, positive = "Churns")
+```
+
+As can be seen from the table that the accuracy of the model on the test subset (Accuracy = 0.81) is not that different compared to the model on train subset (Accuracy = 0.83), which means that the model was trained properly (no overfitting) and performs almost as equally good as on the training set, which is great.
+
+
+ROC curve and AUC for prediction model on test set
+
+
+```{r}
+model = glm(churn~., family = binomial, data = churn.train)
+pred = predict(model, newdata = churn.test, type = "response")
+ROC = roc(response = churn.test$churn, predictor = pred)
+
+ggplot() + geom_path(aes(y=ROC$sensitivities, x=1-ROC$specificities))+
+  labs(x = "FPR", y = "TPR", title="ROC curve")+
+  theme_minimal()
+```
+
+```{r}
+pROC::auc(ROC)
+```
+
+The ROC and AUC metrics confirm the result from confusion matrix.
+
+
+
+Training and Testing the data with 80:20 Partition
+
+```{r}
+
+set.seed(125)
+train <- sample(nrow(Churn), nrow(Churn)*0.8)
+churn.train <- Churn[train,]
+churn.test <- Churn[-train,]
+
+nrow(churn.train)/(nrow(churn.test)+nrow(churn.train))
+
+```
+
+Creating 2 lists for plots
+
+```{r}
+AUC = list()
+Accuracy = list()
+```
+
+## Random Forest Model
+
+```{r}
+library(randomForest)
+library(pROC)
+set.seed(1)
+
+churn.train$Exited <- as.character(churn.train$Exited)
+churn.train$Exited <- as.factor(churn.train$Exited)
+
+churn.test$Exited <- as.character(churn.test$Exited)
+churn.test$Exited <- as.factor(churn.test$Exited)
+
+RFModel <- randomForest(Exited~.,data=churn.train,ntree=100,mtry = 5, proximity=T,importance=T)
+RFPrediction <- predict(RFModel, churn.test)
+
+RFConfMat <- confusionMatrix(RFPrediction, churn.test[,"Exited"])
+RFPredictionprob = predict(RFModel,churn.test,type="prob")[, 2]
+
+ImpVari<- importance(RFModel)
+AUC$RF <- roc(as.numeric(churn.test$Exited),as.numeric(as.matrix((RFPredictionprob))))$auc
+Accuracy$RF <- RFConfMat$overall['Accuracy']
+varImpPlot(RFModel)
+
+ctrl <- trainControl(## 10-fold repeated CV
+                           method = "repeatedcv",
+                           number = 10,repeats = 10)
+
+RFModel <- train(Exited ~ .,
+                      data = churn.train,
+                      method="rf",
+                      trControl = ctrl
+                      )
+
+
+```
+
+Random forest confusion matrix, Important Variables and Plot
+
+```{r}
+RFConfMat
+plot(RFModel)
+```
+
+## SVM
+
+```{r}
+# Set a random seed
+set.seed(125)
+# Split the dataset: 80% for trainging and 20% for testing
+
+test.ind = createDataPartition(modeling_data$churn, p = 0.2, list = FALSE)
+churn.test = modeling_data[test.ind,]
+churn.train = modeling_data[-test.ind,]
+
+churn.train$churn<-as.numeric(churn.train$churn)
+churn.test$churn<-as.numeric(churn.test$churn)
+```
+# Fitting SVM to the Training set
+```{r}
+
+
+model.svm = svm(formula = churn~ .,
+                 data = churn.train,
+                 type = 'C-classification',
+                 kernel = 'linear')
+print(model.svm)
+```
+
+```{r}
+test_pred_lin <- predict(model.svm, newdata = churn.test)
+head(test_pred_lin)
+```
+
+```{r}
+confusionMatrix(table(test_pred_lin, churn.test$churn))
+```
+# Fitting SVM with sigmoid function 
+
+```{r}
+
+# Fitting SVM to the Training set
+
+
+sigmoid_svm = svm(formula = churn~.,
+                 data = churn.train,
+                 type = 'C-classification',
+                 kernel = 'sigmoid')
+```
+
+
+
+```{r}
+# Predicting the Test set results
+test_pred_sig <- predict(sigmoid_svm, newdata = churn.test)
+head(test_pred_sig)
+```
+
+
+```{r}
+# Making the Confusion Matrix
+confusionMatrix(table(test_pred_sig, churn.test$churn))
+```
+
+
+
+
+# Polynomial SVM 
+
+```{r}
+poly_svm = svm(formula = churn~.,
+                 data = churn.train,
+                 type = 'C-classification',
+                 kernel = 'polynomial')
+```
+
+
+
+
+
+```{r}
+# Predicting the Test set results
+test_pred_poly <- predict(poly_svm, newdata = churn.test)
+```
+
+
+
+
+```{r}
+# Making the Confusion Matrix
+confusionMatrix(table(test_pred_poly, churn.test$churn))
+```
+# Radial basis function  SVM (RBF kernel )
+
+```{r}
+rbf_svm = svm(formula = churn~.,
+                 data = churn.train,
+                 type = 'C-classification',
+                 kernel = 'radial')
+```
+
+
+
+```{r}
+# Predicting the Test set results
+test_pred_rbf <- predict(rbf_svm, newdata = churn.test)
+head(test_pred_rbf)
+```
+
+
+
+```{r}
+# Making the Confusion Matrix
+confusionMatrix(table(test_pred_rbf, churn.test$churn))
+```
+
